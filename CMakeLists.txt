@@ -14,6 +14,9 @@ find_package(ament_cmake REQUIRED)
 find_package(sigyn_interfaces REQUIRED)
 find_package(vision_msgs REQUIRED)
 
+# ── Python package (makes 'sigyn_oakd_detection' importable) ─────────────────
+ament_python_install_package(${PROJECT_NAME})
+
 # ── Python node ──────────────────────────────────────────────────────────────
 install(PROGRAMS
   sigyn_oakd_detection/oakd_detector_node.py
