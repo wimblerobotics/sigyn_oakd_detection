@@ -1,0 +1,61 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd"
+  schematypens="http://www.w3.org/2001/XMLSchema"?>
+<!--
+  SPDX-License-Identifier: Apache-2.0
+  Copyright 2025 Wimblerobotics
+-->
+<package format="3">
+  <name>sigyn_oakd_detection</name>
+  <version>1.0.0</version>
+  <description>
+    OAK-D spatial YOLO can detector for the Sigyn house-patrol robot.
+
+    Runs a DepthAI pipeline (YOLOv5, custom single-output blob) directly on the
+    OAK-D device, maps raw spatial coordinates into the ROS optical frame, and
+    publishes:
+      - annotated RGB images
+      - 3D PointStamped in the camera and base_link frames
+      - a rich OakdDetection custom message
+      - a Detection2DArray heartbeat (consumed by the behavior-tree WaitForDetection node)
+
+    Intended for deployment on sigyn7900a (the only host with an OAK-D camera).
+  </description>
+
+  <maintainer email="mike@wimblerobotics.com">Michael Wimble</maintainer>
+  <license>Apache-2.0</license>
+  <url type="repository">https://github.com/wimblerobotics/sigyn_oakd_detection</url>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <!-- Custom message type -->
+  <depend>sigyn_interfaces</depend>
+
+  <!-- Runtime Python deps -->
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>vision_msgs</depend>
+  <depend>tf2_ros</depend>
+  <depend>tf2_geometry_msgs</depend>
+  <depend>cv_bridge</depend>
+  <depend>image_transport</depend>
+
+  <!-- Launch/visualisation -->
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>rviz2</exec_depend>
+
+  <test_depend>ament_cmake_flake8</test_depend>
+  <test_depend>ament_cmake_pep257</test_depend>
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+  <test_depend>pytest</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
