@@ -62,7 +62,8 @@ import rclpy
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.parameter import Parameter
-from sensor_msgs.msg import Image
+from rclpy.qos import qos_profile_sensor_data
+from sensor_msgs.msg import CompressedImage, Image
 from sigyn_interfaces.msg import OakdDetection
 from sigyn_oakd_detection.detection_utils import (
     apply_axis_map,
@@ -170,7 +171,12 @@ class OakdDetectorNode(Node):
         self._pub_rgb = self.create_publisher(Image, "/oakd_top/rgb_preview", 10)
         self._pub_depth = self.create_publisher(Image, "/oakd_top/depth_image", 10)
         self._pub_annotated = self.create_publisher(
-            Image, "/oakd_top/annotated_image", 10
+            Image, "/oakd_top/annotated_image", qos_profile_sensor_data
+        )
+        self._pub_annotated_compressed = self.create_publisher(
+            CompressedImage,
+            "/oakd_top/annotated_image/compressed",
+            qos_profile_sensor_data,
         )
         self._pub_point = self.create_publisher(
             PointStamped, "/oakd_top/can_point_camera", 10
@@ -226,7 +232,7 @@ class OakdDetectorNode(Node):
         )
         cam_rgb.setInterleaved(False)
         cam_rgb.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
-        cam_rgb.setFps(15)
+        cam_rgb.setFps(10)
 
         # Mono cameras for stereo depth
         mono_left = pipeline.create(dai.node.MonoCamera)
@@ -723,19 +729,36 @@ class OakdDetectorNode(Node):
     # ── Image publishing helpers ───────────────────────────────────────────────
 
     def _publish_rgb(self, frame: np.ndarray) -> None:
-        """Publish an RGB preview frame and keep the annotated stream alive."""
+        """Publish the raw RGB preview frame."""
+        stamp = self.get_clock().now().to_msg()
         msg = self._bridge.cv2_to_imgmsg(frame, "bgr8")
-        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.stamp = stamp
         msg.header.frame_id = self._camera_frame
         self._pub_rgb.publish(msg)
-        self._pub_annotated.publish(msg)
 
     def _publish_annotated(self, frame: np.ndarray) -> None:
         """Publish an annotated BGR frame."""
+        stamp = self.get_clock().now().to_msg()
         msg = self._bridge.cv2_to_imgmsg(frame, "bgr8")
-        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.stamp = stamp
         msg.header.frame_id = self._camera_frame
         self._pub_annotated.publish(msg)
+        self._publish_annotated_compressed(frame, stamp)
+
+    def _publish_annotated_compressed(self, frame: np.ndarray, stamp) -> None:
+        """Publish a JPEG-compressed annotated frame for remote viewers."""
+        success, encoded = cv2.imencode(
+            ".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 70]
+        )
+        if not success:
+            self.get_logger().warning("Failed to JPEG-encode annotated frame")
+            return
+        msg = CompressedImage()
+        msg.header.stamp = stamp
+        msg.header.frame_id = self._camera_frame
+        msg.format = "jpeg"
+        msg.data = encoded.tobytes()
+        self._pub_annotated_compressed.publish(msg)
 
     def _publish_depth(self, depth: np.ndarray) -> None:
         """Publish a colour-mapped depth visualisation (throttled)."""

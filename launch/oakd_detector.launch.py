@@ -75,6 +75,7 @@ def generate_launch_description() -> LaunchDescription:
             # Expose detections on the canonical Sigyn topic consumed by BT.
             ("/oakd_top/can_point_camera", "/oakd/can_detection"),
             ("/oakd_top/annotated_image", "/oakd/annotated_image"),
+            ("/oakd_top/annotated_image/compressed", "/oakd/annotated_image/compressed"),
         ],
     )
 
