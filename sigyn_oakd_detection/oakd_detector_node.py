@@ -14,10 +14,10 @@ Topics published
 /oakd_top/rgb_preview          sensor_msgs/Image
 /oakd_top/annotated_image      sensor_msgs/Image
 /oakd_top/depth_image          sensor_msgs/Image  (throttled)
-/oakd_top/can_point_camera     geometry_msgs/PointStamped  (mapped frame)
-/oakd_top/can_point_raw        geometry_msgs/PointStamped  (pre-mapping)
-/oakd_top/can_detections       sigyn_oakd_detection/OakdDetection
-/oakd/object_detector_heartbeat  vision_msgs/Detection2DArray
+/oakd_top/can_point_camera     geometry_msgs/PointStamped  (best 3D detection, mapped frame)
+/oakd_top/can_point_raw        geometry_msgs/PointStamped  (best 3D detection, pre-mapping)
+/oakd_top/can_detections       sigyn_interfaces/OakdDetectionArray  (all detections; empty when none)
+/oakd/object_detector_heartbeat  vision_msgs/Detection2DArray  (legacy heartbeat)
 
 Parameters
 ----------
@@ -64,7 +64,7 @@ from rclpy.node import Node
 from rclpy.parameter import Parameter
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import CompressedImage, Image
-from sigyn_interfaces.msg import OakdDetection
+from sigyn_interfaces.msg import OakdDetection, OakdDetectionArray
 from sigyn_oakd_detection.detection_utils import (
     apply_axis_map,
     axis_map_to_string,
@@ -96,7 +96,7 @@ _MIN_BOX_SIDE_PX: int = 6
 _MAX_NMS_CANDIDATES: int = 300
 
 # Only the best detection per frame is published.
-_MAX_FINAL_DETECTIONS: int = 1
+_MAX_FINAL_DETECTIONS: int = 100  # effectively unlimited; all NMS survivors published
 
 # Throttle the "TF not yet available" warning to once per this many seconds.
 _TF_WARN_INTERVAL_SEC: float = 5.0
@@ -168,8 +168,8 @@ class OakdDetectorNode(Node):
             )
 
         # ── Publishers ──────────────────────────────────────────────────────
-        self._pub_rgb = self.create_publisher(Image, "/oakd_top/rgb_preview", 10)
-        self._pub_depth = self.create_publisher(Image, "/oakd_top/depth_image", 10)
+        self._pub_rgb = self.create_publisher(Image, "/oakd_top/rgb_preview", qos_profile_sensor_data)
+        self._pub_depth = self.create_publisher(Image, "/oakd_top/depth_image", qos_profile_sensor_data)
         self._pub_annotated = self.create_publisher(
             Image, "/oakd_top/annotated_image", qos_profile_sensor_data
         )
@@ -179,16 +179,18 @@ class OakdDetectorNode(Node):
             qos_profile_sensor_data,
         )
         self._pub_point = self.create_publisher(
-            PointStamped, "/oakd_top/can_point_camera", 10
+            PointStamped, "/oakd_top/can_point_camera", qos_profile_sensor_data
         )
         self._pub_point_raw = self.create_publisher(
-            PointStamped, "/oakd_top/can_point_raw", 10
+            PointStamped, "/oakd_top/can_point_raw", qos_profile_sensor_data
         )
         self._pub_heartbeat = self.create_publisher(
-            Detection2DArray, "/oakd/object_detector_heartbeat", 10
+            Detection2DArray, "/oakd/object_detector_heartbeat", qos_profile_sensor_data
         )
+        # Publishes every camera frame (array may be empty).
+        # An empty array signals "detector alive, no detections found".
         self._pub_detection = self.create_publisher(
-            OakdDetection, "/oakd_top/can_detections", 10
+            OakdDetectionArray, "/oakd_top/can_detections", qos_profile_sensor_data
         )
 
         # ── TF ──────────────────────────────────────────────────────────────
@@ -487,6 +489,12 @@ class OakdDetectorNode(Node):
                 final_confs = final_confs[order]
                 final_centers = final_centers[order]
 
+            stamp = self.get_clock().now().to_msg()
+            focal = _NN_INPUT_WIDTH / (
+                2 * math.tan(math.radians(_OAKD_HFOV_DEG / 2))
+            )
+            detection_msgs: List[OakdDetection] = []
+            best_3d_published = False
             annotated = frame_bgr.copy()
             for box, score, center in zip(final_xyxy, final_confs, final_centers):
                 cx, cy = (
@@ -497,9 +505,10 @@ class OakdDetectorNode(Node):
                     0.0 if frame_depth is None else float(frame_depth[cy, cx])
                 )
                 bbox = box.astype(int).tolist()
+                x1, y1, x2, y2 = bbox
 
                 if z_mm == 0.0:
-                    x1, y1, x2, y2 = bbox
+                    # 2D-only detection: include in array (distance_from_camera == 0).
                     cv2.rectangle(
                         annotated, (x1, y1), (x2, y2), (0, 255, 255), 2
                     )
@@ -512,26 +521,47 @@ class OakdDetectorNode(Node):
                         (0, 255, 255),
                         1,
                     )
-                    continue
+                    detection_msgs.append(
+                        self._build_detection_msg(0.0, 0.0, 0.0, float(score), bbox, stamp)
+                    )
+                else:
+                    x_mm = (cx - _NN_INPUT_WIDTH / 2) * z_mm / focal
+                    y_mm = (cy - _NN_INPUT_HEIGHT / 2) * z_mm / focal
 
-                focal = _NN_INPUT_WIDTH / (
-                    2 * math.tan(math.radians(_OAKD_HFOV_DEG / 2))
-                )
-                x_mm = (cx - _NN_INPUT_WIDTH / 2) * z_mm / focal
-                y_mm = (cy - _NN_INPUT_HEIGHT / 2) * z_mm / focal
+                    cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                    cv2.putText(
+                        annotated,
+                        f"{z_mm / 1000.0:.2f}m {score:.2f}",
+                        (x1, max(0, y1 - 10)),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.5,
+                        (0, 255, 0),
+                        2,
+                    )
+                    detection_msgs.append(
+                        self._build_detection_msg(x_mm, y_mm, z_mm, float(score), bbox, stamp)
+                    )
 
-                x1, y1, x2, y2 = bbox
-                cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                cv2.putText(
-                    annotated,
-                    f"{z_mm / 1000.0:.2f}m {score:.2f}",
-                    (x1, max(0, y1 - 10)),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5,
-                    (0, 255, 0),
-                    2,
-                )
-                self._publish_detection(x_mm, y_mm, z_mm, float(score), bbox)
+                    # Publish PointStamped for the best (first) 3D detection.
+                    if not best_3d_published:
+                        best_3d_published = True
+                        raw_m = [x_mm / 1000.0, y_mm / 1000.0, z_mm / 1000.0]
+                        mapped_m = apply_axis_map(raw_m, self._axis_map)
+                        pt_raw = PointStamped()
+                        pt_raw.header = Header(frame_id=self._camera_frame, stamp=stamp)
+                        pt_raw.point = Point(x=raw_m[0], y=raw_m[1], z=raw_m[2])
+                        self._pub_point_raw.publish(pt_raw)
+                        pt_mapped = PointStamped()
+                        pt_mapped.header = Header(frame_id=self._camera_frame, stamp=stamp)
+                        pt_mapped.point = Point(
+                            x=mapped_m[0], y=mapped_m[1], z=mapped_m[2]
+                        )
+                        self._pub_point.publish(pt_mapped)
+                        # Optional axis-map calibration hint.
+                        if self._suggest_axis_map and len(self._expected_target_base) == 3:
+                            self._log_axis_map_suggestion(raw_m, stamp, None)
+
+            self._publish_detections_array(detection_msgs, stamp)
 
             self._publish_annotated(annotated)
             self._publish_heartbeat_from_annotated()
@@ -581,6 +611,62 @@ class OakdDetectorNode(Node):
 
     # ── Detection publishing ───────────────────────────────────────────────────
 
+    def _build_detection_msg(
+        self,
+        x_mm: float,
+        y_mm: float,
+        z_mm: float,
+        confidence: float,
+        bbox: List[int],
+        stamp,
+    ) -> OakdDetection:
+        """Build an OakdDetection in the camera optical frame.  No TF is performed.
+
+        The detector publishes in its own native frame; any consumer that needs
+        a different frame (e.g. base_link or odom) must perform the transform.
+
+        Args:
+            x_mm, y_mm, z_mm: DepthAI spatial coordinates in millimetres
+                (pre-axis-mapping).
+            confidence: Detection score in [0, 1].
+            bbox: Bounding box [x1, y1, x2, y2] in preview-image pixels.
+            stamp: ROS timestamp for the message header.
+
+        Returns:
+            Populated OakdDetection (not yet published).
+        """
+        raw_m = [x_mm / 1000.0, y_mm / 1000.0, z_mm / 1000.0]
+        mapped_m = apply_axis_map(raw_m, self._axis_map)
+
+        msg = OakdDetection()
+        msg.header = Header(frame_id=self._camera_frame, stamp=stamp)
+        msg.class_name = "can"
+        msg.confidence = confidence
+        msg.bbox_xmin = bbox[0]
+        msg.bbox_ymin = bbox[1]
+        msg.bbox_xmax = bbox[2]
+        msg.bbox_ymax = bbox[3]
+        msg.bbox_center_x = (bbox[0] + bbox[2]) // 2
+        msg.bbox_center_y = (bbox[1] + bbox[3]) // 2
+        msg.spatial_camera = Point(x=mapped_m[0], y=mapped_m[1], z=mapped_m[2])
+        msg.distance_from_camera = float(raw_m[2])  # depth before axis mapping
+        msg.diagnostic_log = []
+        return msg
+
+    def _publish_detections_array(
+        self, detections: List[OakdDetection], stamp
+    ) -> None:
+        """Publish OakdDetectionArray (empty or populated).
+
+        Args:
+            detections: List of OakdDetection messages (may be empty).
+            stamp: ROS timestamp for the array header.
+        """
+        array_msg = OakdDetectionArray()
+        array_msg.header = Header(frame_id=self._camera_frame, stamp=stamp)
+        array_msg.detections = detections
+        self._pub_detection.publish(array_msg)
+
     def _publish_detection(
         self,
         x_mm: float,
@@ -589,110 +675,31 @@ class OakdDetectorNode(Node):
         confidence: float,
         bbox: List[int],
     ) -> None:
-        """Apply axis mapping, publish raw/mapped PointStamped and OakdDetection.
+        """Legacy single-detection publisher — wraps _build_detection_msg.
 
-        Attempts a base_link transform; publishes camera-frame data when TF is
-        not yet available.
-
-        Args:
-            x_mm: DepthAI x spatial coordinate in millimetres.
-            y_mm: DepthAI y spatial coordinate in millimetres.
-            z_mm: DepthAI z spatial coordinate (depth) in millimetres.
-            confidence: Detection score in [0, 1].
-            bbox: Bounding box [x1, y1, x2, y2] in preview-image pixels.
+        Kept for backward compatibility with any external call sites.
+        New code should call _build_detection_msg + _publish_detections_array.
+        Also publishes the raw/mapped PointStamped topics for visualisation.
         """
+        stamp = self.get_clock().now().to_msg()
         raw_m = [x_mm / 1000.0, y_mm / 1000.0, z_mm / 1000.0]
         mapped_m = apply_axis_map(raw_m, self._axis_map)
 
-        stamp = self.get_clock().now().to_msg()
-
-        # Raw point (pre-mapping)
         pt_raw = PointStamped()
         pt_raw.header = Header(frame_id=self._camera_frame, stamp=stamp)
         pt_raw.point = Point(x=raw_m[0], y=raw_m[1], z=raw_m[2])
         self._pub_point_raw.publish(pt_raw)
 
-        # Axis-mapped point
         pt_mapped = PointStamped()
         pt_mapped.header = Header(frame_id=self._camera_frame, stamp=stamp)
         pt_mapped.point = Point(x=mapped_m[0], y=mapped_m[1], z=mapped_m[2])
         self._pub_point.publish(pt_mapped)
 
-        # TF to base_link
-        pt_base: Optional[PointStamped] = None
-        tf_available = False
-        try:
-            if self._tf_buffer.can_transform(
-                "base_link", self._camera_frame, rclpy.time.Time()
-            ):
-                tf_available = True
-                transform = self._tf_buffer.lookup_transform(
-                    "base_link", self._camera_frame, rclpy.time.Time()
-                )
-                pt_base = tf2_geometry_msgs.do_transform_point(
-                    pt_mapped, transform
-                )
+        det_msg = self._build_detection_msg(x_mm, y_mm, z_mm, confidence, bbox, stamp)
+        self._publish_detections_array([det_msg], stamp)
 
-                if self._log_tf_debug:
-                    roll, pitch, yaw = quaternion_to_rpy(
-                        transform.transform.rotation
-                    )
-                    self.get_logger().debug(
-                        f"Camera→base_link: "
-                        f"t=({transform.transform.translation.x:.3f},"
-                        f"{transform.transform.translation.y:.3f},"
-                        f"{transform.transform.translation.z:.3f}) "
-                        f"rpy=({math.degrees(roll):.1f}°,"
-                        f"{math.degrees(pitch):.1f}°,"
-                        f"{math.degrees(yaw):.1f}°)"
-                    )
-
-                # Optional axis-map suggestion
-                if (
-                    self._suggest_axis_map
-                    and len(self._expected_target_base) == 3
-                ):
-                    self._log_axis_map_suggestion(raw_m, stamp, transform)
-        except Exception as exc:  # pylint: disable=broad-except
-            self.get_logger().debug(f"TF lookup error: {exc}")
-
-        if not tf_available:
-            now_s = time.monotonic()
-            last_warn = getattr(self, "_last_tf_warn", 0.0)
-            if now_s - last_warn > _TF_WARN_INTERVAL_SEC:
-                self.get_logger().warning(
-                    f"TF not yet available: '{self._camera_frame}' → 'base_link'"
-                )
-                self._last_tf_warn = now_s
-
-        # Publish rich detection message
-        if self._pub_detection is not None:
-            msg = OakdDetection()
-            msg.header = (
-                pt_base.header
-                if pt_base is not None
-                else Header(frame_id=self._camera_frame, stamp=stamp)
-            )
-            msg.class_name = "can"
-            msg.confidence = confidence
-            msg.bbox_xmin = bbox[0]
-            msg.bbox_ymin = bbox[1]
-            msg.bbox_xmax = bbox[2]
-            msg.bbox_ymax = bbox[3]
-            msg.bbox_center_x = (bbox[0] + bbox[2]) // 2
-            msg.bbox_center_y = (bbox[1] + bbox[3]) // 2
-            msg.spatial_camera = Point(
-                x=mapped_m[0], y=mapped_m[1], z=mapped_m[2]
-            )
-            if pt_base is not None:
-                msg.spatial_base_link = pt_base.point
-            else:
-                msg.spatial_base_link = Point(
-                    x=mapped_m[0], y=mapped_m[1], z=mapped_m[2]
-                )
-            msg.distance_from_camera = float(raw_m[2])
-            msg.diagnostic_log = [] if tf_available else ["no_tf_base_link"]
-            self._pub_detection.publish(msg)
+        if self._suggest_axis_map and len(self._expected_target_base) == 3:
+            self._log_axis_map_suggestion(raw_m, stamp, None)
 
     def _log_axis_map_suggestion(
         self, raw_m: List[float], stamp, transform
@@ -775,9 +782,10 @@ class OakdDetectorNode(Node):
         self._pub_depth.publish(msg)
 
     def _publish_heartbeat(self, frame: np.ndarray) -> None:
-        """Publish passthrough annotated image and empty heartbeat."""
+        """Publish passthrough annotated image, empty detection array, and heartbeat."""
         self._publish_annotated(frame)
         self._publish_heartbeat_from_annotated()
+        self._publish_detections_array([], self.get_clock().now().to_msg())
 
     def _publish_heartbeat_from_annotated(self) -> None:
         """Publish Detection2DArray heartbeat (annotated image already published)."""

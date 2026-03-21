@@ -49,8 +49,8 @@ def generate_launch_description() -> LaunchDescription:
     )
     spatial_axis_map_arg = DeclareLaunchArgument(
         "spatial_axis_map",
-        default_value="-z,x,y",
-        description="DepthAI spatial axis remapping (e.g. '-z,x,y')",
+        default_value="x,y,z",
+        description="DepthAI spatial axis remapping (e.g. 'x,y,z'). Identity keeps optical-frame convention: x=right, y=down, z=forward (depth).",
     )
     log_tf_debug_arg = DeclareLaunchArgument(
         "log_tf_debug",
@@ -72,8 +72,10 @@ def generate_launch_description() -> LaunchDescription:
             }
         ],
         remappings=[
-            # Expose detections on the canonical Sigyn topic consumed by BT.
-            ("/oakd_top/can_point_camera", "/oakd/can_detection"),
+            # Expose detections on the canonical Sigyn topics consumed by the BT.
+            # Rich detection (class + confidence + 3D position) — primary BT subscription.
+            ("/oakd_top/can_detections", "/oakd/can_detections"),
+            # Annotated images for RViz.
             ("/oakd_top/annotated_image", "/oakd/annotated_image"),
             ("/oakd_top/annotated_image/compressed", "/oakd/annotated_image/compressed"),
         ],
