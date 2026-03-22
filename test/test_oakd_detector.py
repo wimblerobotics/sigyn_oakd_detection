@@ -33,6 +33,9 @@ from sigyn_oakd_detection.detection_utils import (  # noqa: E402
     apply_axis_map,
     axis_map_to_string,
     best_axis_map,
+    depth_frame_to_point_cloud_xyz,
+    deproject_depth_pixel,
+    estimate_object_depth,
     non_maximum_suppression,
     parse_axis_map,
     quaternion_to_rpy,
@@ -196,6 +199,102 @@ class TestNonMaximumSuppression:
         # IoU = 9*10 / (100 + 100 - 90) = 90/110 ≈ 0.818 > 0.5
         kept = non_maximum_suppression(boxes, scores, 0.5)
         assert kept == [0]
+
+
+# ── depth helpers ─────────────────────────────────────────────────────────
+
+
+class TestEstimateObjectDepth:
+    """Tests for estimate_object_depth()."""
+
+    def test_prefers_foreground_cluster_over_background(self):
+        depth = np.full((10, 10), 1200, dtype=np.uint16)
+        depth[3:7, 4:6] = 820
+        sample = estimate_object_depth(depth, [2, 2, 7, 7])
+        assert sample is not None
+        sample_x, sample_y, sample_depth = sample
+        assert sample_depth == pytest.approx(820.0, abs=1.0)
+        assert sample_x == pytest.approx(4.5, abs=1.0)
+        assert sample_y == pytest.approx(4.5, abs=1.0)
+
+    def test_returns_none_without_valid_depth(self):
+        depth = np.zeros((6, 6), dtype=np.uint16)
+        assert estimate_object_depth(depth, [1, 1, 4, 4]) is None
+
+
+class TestDeprojectDepthPixel:
+    """Tests for deproject_depth_pixel()."""
+
+    def test_principal_point_projects_to_z_axis(self):
+        point = deproject_depth_pixel(320.0, 180.0, 1000.0, 500.0, 500.0, 320.0, 180.0)
+        assert point == pytest.approx([0.0, 0.0, 1000.0])
+
+    def test_pixel_offset_projects_with_fx_and_fy(self):
+        point = deproject_depth_pixel(420.0, 280.0, 1000.0, 500.0, 400.0, 320.0, 180.0)
+        assert point == pytest.approx([200.0, 250.0, 1000.0])
+
+
+class TestDepthFrameToPointCloudXyz:
+    """Tests for depth_frame_to_point_cloud_xyz()."""
+
+    def test_returns_empty_for_empty_depth(self):
+        cloud = depth_frame_to_point_cloud_xyz(
+            np.zeros((0, 0), dtype=np.uint16),
+            500.0,
+            500.0,
+            1.0,
+            1.0,
+        )
+        assert cloud.shape == (0, 3)
+
+    def test_projects_valid_points_in_meters(self):
+        depth = np.array(
+            [
+                [0, 1000],
+                [2000, 3000],
+            ],
+            dtype=np.uint16,
+        )
+        cloud = depth_frame_to_point_cloud_xyz(
+            depth,
+            1000.0,
+            1000.0,
+            0.0,
+            0.0,
+            stride=1,
+        )
+        assert cloud == pytest.approx(
+            np.array(
+                [
+                    [0.001, 0.0, 1.0],
+                    [0.0, 0.002, 2.0],
+                    [0.003, 0.003, 3.0],
+                ],
+                dtype=np.float32,
+            )
+        )
+
+    def test_applies_stride_and_max_depth(self):
+        depth = np.array(
+            [
+                [1000, 1000, 1000, 1000],
+                [1000, 1000, 1000, 1000],
+                [4000, 4000, 4000, 4000],
+                [4000, 4000, 4000, 4000],
+            ],
+            dtype=np.uint16,
+        )
+        cloud = depth_frame_to_point_cloud_xyz(
+            depth,
+            1000.0,
+            1000.0,
+            0.0,
+            0.0,
+            stride=2,
+            max_depth_mm=1500.0,
+        )
+        assert cloud.shape == (2, 3)
+        assert cloud[:, 2] == pytest.approx([1.0, 1.0])
 
 
 # ── quaternion_to_rpy ──────────────────────────────────────────────────────

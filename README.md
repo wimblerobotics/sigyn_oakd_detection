@@ -24,6 +24,11 @@ In the Sigyn deployment it is enabled exclusively on **sigyn7900a**.
 | `/oakd_top/rgb_preview` | `sensor_msgs/Image` | Raw 416×416 BGR preview |
 | `/oakd_top/annotated_image` | `sensor_msgs/Image` | RGB image with bounding-box overlay |
 | `/oakd_top/depth_image` | `sensor_msgs/Image` | Colour-mapped depth (throttled) |
+| `/oakd_top/depth_raw` | `sensor_msgs/Image` | Raw aligned depth in millimetres (`16UC1`) |
+| `/oakd_top/camera_info` | `sensor_msgs/CameraInfo` | Intrinsics for the aligned depth frame |
+| `/oakd_top/points` | `sensor_msgs/PointCloud2` | Optical-frame point cloud generated from aligned depth |
+| `/oakd_top/depth_sample_camera` | `geometry_msgs/PointStamped` | Chosen depth sample point in camera frame |
+| `/oakd_top/depth_sample_base` | `geometry_msgs/PointStamped` | Chosen depth sample point in `base_link` |
 | `/oakd_top/can_point_camera` | `geometry_msgs/PointStamped` | Axis-mapped 3-D point in camera frame |
 | `/oakd_top/can_point_raw` | `geometry_msgs/PointStamped` | Raw DepthAI 3-D point (pre-mapping) |
 | `/oakd_top/can_detections` | `sigyn_oakd_detection/OakdDetection` | Rich detection with bbox, spatial coords, diagnostics |
@@ -37,11 +42,14 @@ In the Sigyn deployment it is enabled exclusively on **sigyn7900a**.
 |---|---|---|---|
 | `blob_path` | string | *(see launch)* | Full path to the compiled DepthAI blob |
 | `camera_frame` | string | `oak_rgb_camera_optical_frame` | TF frame of the RGB optical centre |
-| `spatial_axis_map` | string | `x,y,z` | Axis remapping (see below) |
+| `spatial_axis_map` | string | `x,y,z` | Optional post-deprojection axis remapping (see below) |
 | `log_tf_debug` | bool | `true` | Log camera→base_link RPY per detection |
 | `debug_logging` | bool | `false` | Verbose per-frame NN output logs |
 | `debug_log_interval_sec` | float | `2.0` | Minimum seconds between debug log bursts |
 | `depth_publish_every` | int | `5` | Publish depth vis every N frames |
+| `point_cloud_publish_every` | int | `1` | Publish point cloud every N depth frames |
+| `point_cloud_stride` | int | `4` | Use every Nth depth pixel when building the cloud |
+| `point_cloud_max_depth_m` | float | `5.0` | Ignore points deeper than this range |
 | `confidence_threshold` | float | `0.65` | Minimum detection confidence |
 | `iou_threshold` | float | `0.45` | NMS IoU threshold |
 | `expected_target_base` | double[] | — | Expected can position in base_link for axis-map suggestion |
@@ -51,9 +59,29 @@ In the Sigyn deployment it is enabled exclusively on **sigyn7900a**.
 
 ## Spatial axis mapping
 
-DepthAI spatial coordinates are not guaranteed to match ROS optical-frame conventions.
-The `spatial_axis_map` parameter remaps the raw DepthAI `(x_raw, y_raw, z_raw)` vector
-into the ROS camera optical frame before TF transforms are applied.
+The detector computes 3-D points on the host by combining aligned depth with the
+RGB camera intrinsics. That natural output is already in the ROS optical frame
+(`x=right`, `y=down`, `z=forward`).
+
+For debugging, the node also publishes the aligned metric depth image and matching
+`camera_info`, which lets you independently verify the sampled depth and generate a
+point cloud with standard ROS tools if needed.
+
+The node now also publishes `/oakd_top/points` directly as a `PointCloud2`, so RViz
+and downstream consumers can subscribe without reconstructing the cloud themselves.
+
+Each detection also reports richer spatial diagnostics in `diagnostic_log`, including
+the mapped depth ROI, the exact sampled depth pixel, the sampled pixel projected back
+into preview coordinates, the local depth-window min/median/max, and the intrinsics
+used for the deprojection.
+
+The `spatial_axis_map` parameter is therefore only an optional post-deprojection
+remap for debugging or non-standard setups. The normal value for the current
+pipeline is `x,y,z`.
+
+The detector's square 416×416 RGB preview is a center-crop of the wider RGB image used
+to align stereo depth. Depth sampling therefore needs crop-aware preview→depth mapping;
+plain x/y scaling is not sufficient.
 
 Format: three comma-separated tokens, each an optional `-` followed by one of `x`, `y`, `z`.
 
@@ -61,10 +89,10 @@ The token at position *i* in the output is built from axis *letter* of the raw v
 optionally negated:
 
 ```
-spatial_axis_map: "-z,x,y"
-→  out[0] = -raw[2]   (negate raw z)
-   out[1] =  raw[0]
-   out[2] =  raw[1]
+spatial_axis_map: "x,y,z"
+→  out[0] =  raw[0]
+    out[1] =  raw[1]
+    out[2] =  raw[2]
 ```
 
 **To discover the correct value for a new camera mount**, run with:

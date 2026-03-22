@@ -18,9 +18,15 @@ blob_path : str
 camera_frame : str
     TF frame of the RGB optical centre (default: oak_rgb_camera_optical_frame).
 spatial_axis_map : str
-    Axis remapping string, e.g. '-z,x,y' (default: '-z,x,y').
+    Axis remapping string, e.g. 'x,y,z' (default: 'x,y,z').
 log_tf_debug : bool
     Log camera→base_link transform on each detection (default: true).
+point_cloud_publish_every : int
+    Publish the point cloud every N depth frames (default: 1).
+point_cloud_stride : int
+    Use every Nth depth pixel when generating the point cloud (default: 4).
+point_cloud_max_depth_m : float
+    Ignore points beyond this depth when generating the cloud (default: 5.0).
 """
 
 import os
@@ -50,12 +56,27 @@ def generate_launch_description() -> LaunchDescription:
     spatial_axis_map_arg = DeclareLaunchArgument(
         "spatial_axis_map",
         default_value="x,y,z",
-        description="DepthAI spatial axis remapping (e.g. 'x,y,z'). Identity keeps optical-frame convention: x=right, y=down, z=forward (depth).",
+        description="Optional post-deprojection axis remapping (e.g. 'x,y,z'). Identity preserves the ROS optical frame.",
     )
     log_tf_debug_arg = DeclareLaunchArgument(
         "log_tf_debug",
         default_value="true",
         description="Log camera frame RPY on each detection",
+    )
+    point_cloud_publish_every_arg = DeclareLaunchArgument(
+        "point_cloud_publish_every",
+        default_value="1",
+        description="Publish the point cloud every N depth frames",
+    )
+    point_cloud_stride_arg = DeclareLaunchArgument(
+        "point_cloud_stride",
+        default_value="4",
+        description="Use every Nth depth pixel when generating the point cloud",
+    )
+    point_cloud_max_depth_m_arg = DeclareLaunchArgument(
+        "point_cloud_max_depth_m",
+        default_value="5.0",
+        description="Ignore points deeper than this distance when generating the point cloud",
     )
 
     detector_node = Node(
@@ -69,6 +90,9 @@ def generate_launch_description() -> LaunchDescription:
                 "camera_frame": LaunchConfiguration("camera_frame"),
                 "spatial_axis_map": LaunchConfiguration("spatial_axis_map"),
                 "log_tf_debug": LaunchConfiguration("log_tf_debug"),
+                "point_cloud_publish_every": LaunchConfiguration("point_cloud_publish_every"),
+                "point_cloud_stride": LaunchConfiguration("point_cloud_stride"),
+                "point_cloud_max_depth_m": LaunchConfiguration("point_cloud_max_depth_m"),
             }
         ],
         remappings=[
@@ -87,6 +111,9 @@ def generate_launch_description() -> LaunchDescription:
             camera_frame_arg,
             spatial_axis_map_arg,
             log_tf_debug_arg,
+            point_cloud_publish_every_arg,
+            point_cloud_stride_arg,
+            point_cloud_max_depth_m_arg,
             detector_node,
         ]
     )

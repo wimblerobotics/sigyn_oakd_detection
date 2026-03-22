@@ -154,6 +154,164 @@ def non_maximum_suppression(
     return keep
 
 
+# ── Depth helpers ────────────────────────────────────────────────────────────
+
+
+def estimate_object_depth(
+    depth_frame: np.ndarray,
+    bbox_xyxy: Sequence[float],
+    inner_fraction: float = 0.5,
+    foreground_percentile: float = 35.0,
+    foreground_margin_mm: float = 75.0,
+) -> Optional[Tuple[float, float, float]]:
+    """Estimate a foreground depth sample inside a detection bounding box.
+
+    The detector's box can include a lot of background. Using the center pixel or
+    the median of the whole box often returns the wall or floor behind the object.
+    This helper shrinks the ROI toward the centre, then prefers the nearest stable
+    cluster of nonzero depth values inside that ROI.
+
+    Args:
+        depth_frame: Aligned depth frame in millimetres.
+        bbox_xyxy: Bounding box ``[x1, y1, x2, y2]`` in depth-frame pixels.
+        inner_fraction: Fraction of the box width/height to keep around the
+            centre when forming the sampling ROI.
+        foreground_percentile: Low percentile used to identify the foreground
+            cluster inside the ROI.
+        foreground_margin_mm: Additional tolerance above the foreground
+            percentile when forming the cluster.
+
+    Returns:
+        ``(pixel_x, pixel_y, depth_mm)`` for the selected foreground sample, or
+        ``None`` if no valid depth exists in the ROI.
+    """
+    if depth_frame.size == 0:
+        return None
+    if len(bbox_xyxy) != 4:
+        return None
+
+    frame_height, frame_width = depth_frame.shape[:2]
+    x1, y1, x2, y2 = [float(value) for value in bbox_xyxy]
+    if x2 < x1:
+        x1, x2 = x2, x1
+    if y2 < y1:
+        y1, y2 = y2, y1
+
+    center_x = 0.5 * (x1 + x2)
+    center_y = 0.5 * (y1 + y2)
+    half_width = max(0.5, 0.5 * (x2 - x1) * max(0.05, inner_fraction))
+    half_height = max(0.5, 0.5 * (y2 - y1) * max(0.05, inner_fraction))
+
+    roi_x0 = max(0, min(frame_width - 1, int(math.floor(center_x - half_width))))
+    roi_x1 = max(0, min(frame_width - 1, int(math.ceil(center_x + half_width))))
+    roi_y0 = max(0, min(frame_height - 1, int(math.floor(center_y - half_height))))
+    roi_y1 = max(0, min(frame_height - 1, int(math.ceil(center_y + half_height))))
+    if roi_x1 < roi_x0 or roi_y1 < roi_y0:
+        return None
+
+    roi = depth_frame[roi_y0:roi_y1 + 1, roi_x0:roi_x1 + 1]
+    valid_mask = roi > 0
+    if not np.any(valid_mask):
+        return None
+
+    valid_depths = roi[valid_mask].astype(np.float32)
+    percentile_depth = float(np.percentile(valid_depths, foreground_percentile))
+    foreground_limit = percentile_depth + float(max(0.0, foreground_margin_mm))
+    foreground_mask = valid_mask & (roi <= foreground_limit)
+    if not np.any(foreground_mask):
+        foreground_mask = valid_mask
+
+    foreground_depths = roi[foreground_mask].astype(np.float32)
+    sample_depth_mm = float(np.median(foreground_depths))
+
+    ys, xs = np.nonzero(foreground_mask)
+    sample_x = float(roi_x0 + np.median(xs))
+    sample_y = float(roi_y0 + np.median(ys))
+    return sample_x, sample_y, sample_depth_mm
+
+
+def deproject_depth_pixel(
+    pixel_x: float,
+    pixel_y: float,
+    depth_mm: float,
+    fx: float,
+    fy: float,
+    cx: float,
+    cy: float,
+) -> List[float]:
+    """Project a depth pixel into the ROS optical camera frame.
+
+    Args:
+        pixel_x: Depth-frame x coordinate in pixels.
+        pixel_y: Depth-frame y coordinate in pixels.
+        depth_mm: Depth at the pixel in millimetres.
+        fx: Camera focal length in pixels along x.
+        fy: Camera focal length in pixels along y.
+        cx: Camera principal point x in pixels.
+        cy: Camera principal point y in pixels.
+
+    Returns:
+        Camera-frame ``[x_mm, y_mm, z_mm]`` in ROS optical convention.
+    """
+    if depth_mm <= 0.0:
+        return [0.0, 0.0, 0.0]
+    if fx == 0.0 or fy == 0.0:
+        return [0.0, 0.0, depth_mm]
+    x_mm = (float(pixel_x) - float(cx)) * float(depth_mm) / float(fx)
+    y_mm = (float(pixel_y) - float(cy)) * float(depth_mm) / float(fy)
+    return [x_mm, y_mm, float(depth_mm)]
+
+
+def depth_frame_to_point_cloud_xyz(
+    depth_frame: np.ndarray,
+    fx: float,
+    fy: float,
+    cx: float,
+    cy: float,
+    stride: int = 4,
+    max_depth_mm: float = 0.0,
+) -> np.ndarray:
+    """Convert an aligned depth frame into an optical-frame XYZ point cloud.
+
+    Args:
+        depth_frame: Aligned depth image in millimetres.
+        fx: Camera focal length in pixels along x.
+        fy: Camera focal length in pixels along y.
+        cx: Camera principal point x in pixels.
+        cy: Camera principal point y in pixels.
+        stride: Sample every Nth pixel in x and y.
+        max_depth_mm: Optional upper depth cutoff. Non-positive disables it.
+
+    Returns:
+        Float32 array of shape ``(N, 3)`` containing ``[x_m, y_m, z_m]`` in the
+        ROS optical frame.
+    """
+    if depth_frame.size == 0:
+        return np.zeros((0, 3), dtype=np.float32)
+    if fx == 0.0 or fy == 0.0:
+        return np.zeros((0, 3), dtype=np.float32)
+
+    sample_stride = max(1, int(stride))
+    sampled_depth = depth_frame[::sample_stride, ::sample_stride].astype(np.float32)
+    if sampled_depth.size == 0:
+        return np.zeros((0, 3), dtype=np.float32)
+
+    valid_mask = sampled_depth > 0.0
+    if max_depth_mm > 0.0:
+        valid_mask &= sampled_depth <= float(max_depth_mm)
+    if not np.any(valid_mask):
+        return np.zeros((0, 3), dtype=np.float32)
+
+    ys = np.arange(0, depth_frame.shape[0], sample_stride, dtype=np.float32)
+    xs = np.arange(0, depth_frame.shape[1], sample_stride, dtype=np.float32)
+    grid_x, grid_y = np.meshgrid(xs, ys)
+
+    z_m = sampled_depth[valid_mask] / 1000.0
+    x_m = ((grid_x[valid_mask] - float(cx)) * sampled_depth[valid_mask] / float(fx)) / 1000.0
+    y_m = ((grid_y[valid_mask] - float(cy)) * sampled_depth[valid_mask] / float(fy)) / 1000.0
+    return np.column_stack((x_m, y_m, z_m)).astype(np.float32, copy=False)
+
+
 # ── TF helper ─────────────────────────────────────────────────────────────────
 
 

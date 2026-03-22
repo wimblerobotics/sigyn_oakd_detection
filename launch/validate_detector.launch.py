@@ -20,11 +20,17 @@ Launch arguments
 blob_path : str
     Full path to the compiled DepthAI blob (default: bundled can_detector.blob).
 spatial_axis_map : str
-    Axis remapping string (default: '-z,x,y').
+    Axis remapping string (default: 'x,y,z').
 expected_target_base : str
     JSON-list expected can position in base_link for axis-map suggestion.
 suggest_axis_map : bool
     Enable axis-map suggestion logging (default: true).
+point_cloud_publish_every : int
+    Publish the point cloud every N depth frames (default: 1).
+point_cloud_stride : int
+    Use every Nth depth pixel when generating the point cloud (default: 4).
+point_cloud_max_depth_m : float
+    Ignore points beyond this depth when generating the cloud (default: 5.0).
 """
 
 import os
@@ -51,7 +57,7 @@ def generate_launch_description() -> LaunchDescription:
     )
     spatial_axis_map_arg = DeclareLaunchArgument(
         "spatial_axis_map",
-        default_value="-z,x,y",
+        default_value="x,y,z",
         description="DepthAI spatial axis remapping",
     )
     expected_target_base_arg = DeclareLaunchArgument(
@@ -63,6 +69,21 @@ def generate_launch_description() -> LaunchDescription:
         "suggest_axis_map",
         default_value="true",
         description="Log suggested spatial_axis_map on each detection",
+    )
+    point_cloud_publish_every_arg = DeclareLaunchArgument(
+        "point_cloud_publish_every",
+        default_value="1",
+        description="Publish the point cloud every N depth frames",
+    )
+    point_cloud_stride_arg = DeclareLaunchArgument(
+        "point_cloud_stride",
+        default_value="4",
+        description="Use every Nth depth pixel when generating the point cloud",
+    )
+    point_cloud_max_depth_m_arg = DeclareLaunchArgument(
+        "point_cloud_max_depth_m",
+        default_value="5.0",
+        description="Ignore points deeper than this distance when generating the point cloud",
     )
 
     # ── Robot description (for TF / RViz) ──────────────────────────────────
@@ -97,6 +118,9 @@ def generate_launch_description() -> LaunchDescription:
                     "expected_target_base"
                 ),
                 "suggest_axis_map": LaunchConfiguration("suggest_axis_map"),
+                "point_cloud_publish_every": LaunchConfiguration("point_cloud_publish_every"),
+                "point_cloud_stride": LaunchConfiguration("point_cloud_stride"),
+                "point_cloud_max_depth_m": LaunchConfiguration("point_cloud_max_depth_m"),
             }
         ],
     )
@@ -116,6 +140,9 @@ def generate_launch_description() -> LaunchDescription:
             spatial_axis_map_arg,
             expected_target_base_arg,
             suggest_axis_map_arg,
+            point_cloud_publish_every_arg,
+            point_cloud_stride_arg,
+            point_cloud_max_depth_m_arg,
             description_launch,
             detector_node,
             rviz_node,
