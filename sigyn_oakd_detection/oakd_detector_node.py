@@ -24,6 +24,12 @@ Topics published
 /oakd_top/can_detections       sigyn_interfaces/OakdDetectionArray  (all detections; empty when none)
 /oakd/object_detector_heartbeat  vision_msgs/Detection2DArray  (legacy heartbeat)
 
+Topics subscribed
+-----------------
+/sigyn/take_oakd_picture  std_msgs/Bool
+    When ``data`` is True the latest RGB frame is saved as a JPEG in the
+    **trained_images_dir** directory for use as training data.
+
 Parameters
 ----------
 blob_path : str
@@ -57,12 +63,17 @@ expected_target_base : double[]  (optional)
     a suggested spatial_axis_map on every detection.
 suggest_axis_map : bool  (default: True)
     Enable axis-map suggestion logging (requires expected_target_base).
+trained_images_dir : str  (default: ~/sigyn_ws/training_images/oakd)
+    Directory where captured images are written when
+    ``/sigyn/take_oakd_picture`` is triggered.
 """
 
 import math
 import threading
 import time
 import traceback
+from datetime import datetime
+from pathlib import Path
 from typing import List, Optional
 
 import cv2
@@ -89,7 +100,7 @@ from sigyn_oakd_detection.detection_utils import (
     parse_axis_map,
     quaternion_to_rpy,
 )
-from std_msgs.msg import Header
+from std_msgs.msg import Bool, Header
 import tf2_geometry_msgs
 from tf2_ros import Buffer, TransformListener
 from vision_msgs.msg import Detection2DArray
@@ -284,6 +295,7 @@ class OakdDetectorNode(Node):
             "expected_target_base", Parameter.Type.DOUBLE_ARRAY
         )
         self.declare_parameter("suggest_axis_map", True)
+        self.declare_parameter("trained_images_dir", "")
 
         self._blob_path: str = self.get_parameter("blob_path").value
         self._camera_frame: str = self.get_parameter("camera_frame").value
@@ -323,6 +335,15 @@ class OakdDetectorNode(Node):
         )
         self._suggest_axis_map: bool = bool(
             self.get_parameter("suggest_axis_map").value
+        )
+        trained_images_dir: str = self.get_parameter("trained_images_dir").value
+        if trained_images_dir:
+            self._trained_images_dir = Path(trained_images_dir)
+        else:
+            self._trained_images_dir = Path.home() / "sigyn_ws" / "training_images" / "oakd"
+        self._trained_images_dir.mkdir(parents=True, exist_ok=True)
+        self.get_logger().info(
+            f"Training images directory: {self._trained_images_dir}"
         )
 
         if not self._blob_path:
@@ -372,6 +393,18 @@ class OakdDetectorNode(Node):
         # An empty array signals "detector alive, no detections found".
         self._pub_detection = self.create_publisher(
             OakdDetectionArray, "/oakd_top/can_detections", qos_profile_sensor_data
+        )
+
+        # ── Capture state ────────────────────────────────────────────────────
+        self._capture_frame: Optional[np.ndarray] = None
+        self._capture_lock = threading.Lock()
+
+        # ── take_oakd_picture subscription ───────────────────────────────────
+        self._capture_sub = self.create_subscription(
+            Bool,
+            "/sigyn/take_oakd_picture",
+            self._capture_callback,
+            10,
         )
 
         # ── TF ──────────────────────────────────────────────────────────────
@@ -526,6 +559,8 @@ class OakdDetectorNode(Node):
 
                     if in_rgb is not None:
                         latest_bgr = in_rgb.getCvFrame()
+                        with self._capture_lock:
+                            self._capture_frame = latest_bgr.copy()
                         self._publish_rgb(latest_bgr)
 
                     if in_depth is not None:
@@ -1318,6 +1353,30 @@ class OakdDetectorNode(Node):
         self._pub_heartbeat.publish(hb)
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
+
+    def _capture_callback(self, msg: Bool) -> None:
+        """Save the latest RGB frame to the training-set directory.
+
+        Called when a ``std_msgs/Bool(data=True)`` message arrives on
+        ``/sigyn/take_oakd_picture``.
+        """
+        if not msg.data:
+            return
+        with self._capture_lock:
+            frame = self._capture_frame
+        if frame is None:
+            self.get_logger().warning(
+                "take_oakd_picture received but no frame is available yet."
+            )
+            return
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        filename = f"oakd_capture_{timestamp}.jpg"
+        filepath = self._trained_images_dir / filename
+        try:
+            cv2.imwrite(str(filepath), frame)
+            self.get_logger().info(f"Captured image saved: {filepath}")
+        except Exception as exc:  # pylint: disable=broad-except
+            self.get_logger().error(f"Failed to save captured image: {exc}")
 
     def stop(self) -> None:
         """Signal the pipeline thread to stop and wait for it to join."""
