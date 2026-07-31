@@ -380,20 +380,36 @@ class OakdApriltagNode(Node):
 
             # Pose from AprilTag detection
             if detection.pose_R is not None and detection.pose_t is not None:
-                # Convert rotation matrix to quaternion
-                rot = Rotation.from_matrix(detection.pose_R)
-                quat = rot.as_quat()  # [x, y, z, w]
+                try:
+                    # Convert rotation matrix to quaternion
+                    # Check for valid rotation matrix (positive determinant)
+                    import numpy as np
+                    det = np.linalg.det(detection.pose_R)
+                    if det <= 0:
+                        self.get_logger().warning(
+                            f'Skipping tag {detection.tag_id}: invalid rotation matrix '
+                            f'(determinant={det:.6f})'
+                        )
+                        continue
+                    
+                    rot = Rotation.from_matrix(detection.pose_R)
+                    quat = rot.as_quat()  # [x, y, z, w]
 
-                pose = Pose()
-                pose.position.x = float(detection.pose_t[0][0])
-                pose.position.y = float(detection.pose_t[1][0])
-                pose.position.z = float(detection.pose_t[2][0])
-                pose.orientation.x = float(quat[0])
-                pose.orientation.y = float(quat[1])
-                pose.orientation.z = float(quat[2])
-                pose.orientation.w = float(quat[3])
+                    pose = Pose()
+                    pose.position.x = float(detection.pose_t[0][0])
+                    pose.position.y = float(detection.pose_t[1][0])
+                    pose.position.z = float(detection.pose_t[2][0])
+                    pose.orientation.x = float(quat[0])
+                    pose.orientation.y = float(quat[1])
+                    pose.orientation.z = float(quat[2])
+                    pose.orientation.w = float(quat[3])
 
-                hyp.pose.pose = pose
+                    hyp.pose.pose = pose
+                except (ValueError, np.linalg.LinAlgError) as e:
+                    self.get_logger().warning(
+                        f'Skipping tag {detection.tag_id}: pose conversion failed - {e}'
+                    )
+                    continue
 
             det_3d.results.append(hyp)
             detection_array.detections.append(det_3d)
