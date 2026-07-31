@@ -1,0 +1,19 @@
+# OAK-D Detection Requirements
+# Install with: pip install -r requirements.txt
+
+# Core OAK-D camera support
+depthai>=2.22.0.0
+blobconverter>=1.4.0
+
+# AprilTag detection (actively maintained)
+pupil-apriltags>=1.0.0
+
+# Computer vision
+opencv-python>=4.8.0
+numpy>=1.24.0
+
+# ROS 2 Python dependencies (usually installed with ROS)
+# Uncomment if installing outside a ROS environment:
+# rclpy
+# cv-bridge
+# tf2-ros

@@ -70,7 +70,7 @@ from vision_msgs.msg import Detection3D, Detection3DArray, ObjectHypothesisWithP
 import tf2_ros
 
 try:
-    import dt_apriltags
+    import pupil_apriltags as apriltag
     APRILTAG_AVAILABLE = True
 except ImportError:
     APRILTAG_AVAILABLE = False
@@ -97,7 +97,7 @@ class OakdApriltagNode(Node):
         self.declare_parameter("apriltag_refine_edges", True)
         self.declare_parameter("apriltag_decode_sharpening", 0.25)
         self.declare_parameter("apriltag_max_hamming", 1)
-        self.declare_parameter("tag_size_m", 0.166)
+        self.declare_parameter("tag_size_m", 0.120) # 0.166)
 
         # Get parameters
         self.camera_mx_id = self.get_parameter("camera_mx_id").value
@@ -119,17 +119,17 @@ class OakdApriltagNode(Node):
         # Check AprilTag library availability
         if not APRILTAG_AVAILABLE:
             self.get_logger().error(
-                "dt_apriltags library not available. Install with: pip install dt-apriltags"
+                "pupil_apriltags library not available. Install with: pip install pupil-apriltags"
             )
-            raise RuntimeError("dt_apriltags library required but not found")
+            raise RuntimeError("pupil_apriltags library required but not found")
 
         # Initialize AprilTag detector
-        self.at_detector = dt_apriltags.Detector(
+        self.at_detector = apriltag.Detector(
             families=self.apriltag_family,
             nthreads=2,
             quad_decimate=self.apriltag_quad_decimate,
             quad_sigma=self.apriltag_quad_sigma,
-            refine_edges=self.apriltag_refine_edges,
+            refine_edges=1 if self.apriltag_refine_edges else 0,
             decode_sharpening=self.apriltag_decode_sharpening,
             debug=0,
         )
@@ -170,7 +170,7 @@ class OakdApriltagNode(Node):
 
         # RGB camera
         cam_rgb = pipeline.create(dai.node.ColorCamera)
-        cam_rgb.setBoardSocket(dai.CameraBoardSocket.RGB)
+        cam_rgb.setBoardSocket(dai.CameraBoardSocket.CAM_A)
         cam_rgb.setResolution(self._parse_rgb_resolution(self.rgb_resolution))
         cam_rgb.setFps(self.fps)
         cam_rgb.setInterleaved(False)
@@ -182,17 +182,17 @@ class OakdApriltagNode(Node):
         stereo = pipeline.create(dai.node.StereoDepth)
 
         mono_left.setResolution(self._parse_mono_resolution(self.depth_resolution))
-        mono_left.setBoardSocket(dai.CameraBoardSocket.LEFT)
+        mono_left.setBoardSocket(dai.CameraBoardSocket.CAM_B)
         mono_left.setFps(self.fps)
 
         mono_right.setResolution(self._parse_mono_resolution(self.depth_resolution))
-        mono_right.setBoardSocket(dai.CameraBoardSocket.RIGHT)
+        mono_right.setBoardSocket(dai.CameraBoardSocket.CAM_C)
         mono_right.setFps(self.fps)
 
         stereo.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.HIGH_DENSITY)
         stereo.setLeftRightCheck(True)
         stereo.setSubpixel(False)
-        stereo.setDepthAlign(dai.CameraBoardSocket.RGB)
+        stereo.setDepthAlign(dai.CameraBoardSocket.CAM_A)
 
         mono_left.out.link(stereo.left)
         mono_right.out.link(stereo.right)
@@ -217,6 +217,16 @@ class OakdApriltagNode(Node):
             "13mp": dai.ColorCameraProperties.SensorResolution.THE_13_MP,
         }
         return mapping.get(res_str.lower(), dai.ColorCameraProperties.SensorResolution.THE_1080_P)
+
+    def _get_rgb_resolution_dimensions(self, res_str: str) -> Tuple[int, int]:
+        """Get width and height for RGB resolution string."""
+        mapping = {
+            "1080p": (1920, 1080),
+            "4k": (3840, 2160),
+            "12mp": (4056, 3040),
+            "13mp": (4208, 3120),
+        }
+        return mapping.get(res_str.lower(), (1920, 1080))
 
     def _parse_mono_resolution(self, res_str: str) -> dai.MonoCameraProperties.SensorResolution:
         """Parse mono resolution string to DepthAI enum."""
@@ -250,16 +260,17 @@ class OakdApriltagNode(Node):
 
             # Create pipeline and device
             pipeline = self._create_pipeline()
-            with dai.Device(pipeline, device_info) as device:
+            with dai.Device(pipeline, device_info, usb2Mode=False) as device:
                 self.get_logger().info("DepthAI pipeline started")
 
-                # Get camera calibration
+                # Get camera calibration for the actual resolution being used
+                width, height = self._get_rgb_resolution_dimensions(self.rgb_resolution)
                 calib = device.readCalibration()
-                intrinsics = calib.getCameraIntrinsics(dai.CameraBoardSocket.RGB)
+                intrinsics = calib.getCameraIntrinsics(dai.CameraBoardSocket.CAM_A, width, height)
                 self.camera_matrix = np.array(intrinsics).reshape(3, 3)
                 self.dist_coeffs = np.zeros(5)  # OAK-D provides rectified images
                 
-                self.get_logger().info(f"Camera matrix:\n{self.camera_matrix}")
+                self.get_logger().info(f"Camera matrix for {width}x{height}:\n{self.camera_matrix}")
 
                 # Get output queues
                 q_rgb = device.getOutputQueue(name="rgb", maxSize=4, blocking=False)
@@ -309,12 +320,12 @@ class OakdApriltagNode(Node):
         detections = self.at_detector.detect(
             gray_frame,
             estimate_tag_pose=True,
-            camera_params=(
+            camera_params=[
                 self.camera_matrix[0, 0],  # fx
                 self.camera_matrix[1, 1],  # fy
                 self.camera_matrix[0, 2],  # cx
                 self.camera_matrix[1, 2],  # cy
-            ),
+            ],
             tag_size=self.tag_size_m,
         )
 
@@ -374,9 +385,9 @@ class OakdApriltagNode(Node):
                 quat = rot.as_quat()  # [x, y, z, w]
 
                 pose = Pose()
-                pose.position.x = float(detection.pose_t[0])
-                pose.position.y = float(detection.pose_t[1])
-                pose.position.z = float(detection.pose_t[2])
+                pose.position.x = float(detection.pose_t[0][0])
+                pose.position.y = float(detection.pose_t[1][0])
+                pose.position.z = float(detection.pose_t[2][0])
                 pose.orientation.x = float(quat[0])
                 pose.orientation.y = float(quat[1])
                 pose.orientation.z = float(quat[2])
@@ -389,7 +400,7 @@ class OakdApriltagNode(Node):
 
         self.detections_pub.publish(detection_array)
         
-        self.get_logger().info(
+        self.get_logger().debug(
             f"Detected {len(detections)} AprilTag(s): "
             + ", ".join(f"ID {d.tag_id}" for d in detections)
         )

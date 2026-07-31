@@ -280,6 +280,7 @@ class OakdDetectorNode(Node):
 
         # ── Parameters ──────────────────────────────────────────────────────
         self.declare_parameter("blob_path", "")
+        self.declare_parameter("camera_mx_id", "")
         self.declare_parameter("camera_frame", "oak_rgb_camera_optical_frame")
         self.declare_parameter("spatial_axis_map", "x,y,z")
         self.declare_parameter("log_tf_debug", True)
@@ -298,6 +299,7 @@ class OakdDetectorNode(Node):
         self.declare_parameter("trained_images_dir", "")
 
         self._blob_path: str = self.get_parameter("blob_path").value
+        self._camera_mx_id: str = self.get_parameter("camera_mx_id").value
         self._camera_frame: str = self.get_parameter("camera_frame").value
         self._axis_map: AxisMap = parse_axis_map(
             self.get_parameter("spatial_axis_map").value
@@ -458,20 +460,20 @@ class OakdDetectorNode(Node):
         mono_left.setResolution(
             dai.MonoCameraProperties.SensorResolution.THE_400_P
         )
-        mono_left.setBoardSocket(dai.CameraBoardSocket.LEFT)
+        mono_left.setBoardSocket(dai.CameraBoardSocket.CAM_B)
 
         mono_right = pipeline.create(dai.node.MonoCamera)
         mono_right.setResolution(
             dai.MonoCameraProperties.SensorResolution.THE_400_P
         )
-        mono_right.setBoardSocket(dai.CameraBoardSocket.RIGHT)
+        mono_right.setBoardSocket(dai.CameraBoardSocket.CAM_C)
 
         # Stereo depth aligned to RGB
         stereo = pipeline.create(dai.node.StereoDepth)
         stereo.setDefaultProfilePreset(
             dai.node.StereoDepth.PresetMode.HIGH_DENSITY
         )
-        stereo.setDepthAlign(dai.CameraBoardSocket.RGB)
+        stereo.setDepthAlign(dai.CameraBoardSocket.CAM_A)
         stereo.setSubpixel(False)
 
         # ImageManip: convert BGR preview to RGB for the NN
@@ -527,7 +529,22 @@ class OakdDetectorNode(Node):
 
         self.get_logger().info("Opening DepthAI device…")
         try:
-            with dai.Device(pipeline) as device:
+            # Find device by MxID if specified
+            device_info = None
+            if self._camera_mx_id:
+                for info in dai.Device.getAllAvailableDevices():
+                    if info.getMxId() == self._camera_mx_id:
+                        device_info = info
+                        break
+                if device_info is None:
+                    self.get_logger().error(
+                        f"Camera with MxID {self._camera_mx_id} not found. Available devices:"
+                    )
+                    for info in dai.Device.getAllAvailableDevices():
+                        self.get_logger().info(f"  - {info.getMxId()}")
+                    return
+            
+            with dai.Device(pipeline, device_info) as device:
                 self.get_logger().info(
                     f"Connected to OAK-D id={device.getMxId()} "
                     f"usb={device.getUsbSpeed()}"
@@ -996,7 +1013,7 @@ class OakdDetectorNode(Node):
         if self._device_calibration is not None:
             try:
                 intrinsics = self._device_calibration.getCameraIntrinsics(
-                    dai.CameraBoardSocket.RGB, depth_width, depth_height
+                    dai.CameraBoardSocket.CAM_A, depth_width, depth_height
                 )
                 fx = float(intrinsics[0][0])
                 fy = float(intrinsics[1][1])

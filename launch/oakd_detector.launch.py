@@ -48,6 +48,11 @@ def generate_launch_description() -> LaunchDescription:
         default_value=default_blob,
         description="Full path to the DepthAI compiled blob file",
     )
+    camera_mx_id_arg = DeclareLaunchArgument(
+        "camera_mx_id",
+        default_value="",
+        description="OAK-D device MxID to connect to (empty for first available)",
+    )
     camera_frame_arg = DeclareLaunchArgument(
         "camera_frame",
         default_value="oak_rgb_camera_optical_frame",
@@ -87,6 +92,7 @@ def generate_launch_description() -> LaunchDescription:
         parameters=[
             {
                 "blob_path": LaunchConfiguration("blob_path"),
+                "camera_mx_id": LaunchConfiguration("camera_mx_id"),
                 "camera_frame": LaunchConfiguration("camera_frame"),
                 "spatial_axis_map": LaunchConfiguration("spatial_axis_map"),
                 "log_tf_debug": LaunchConfiguration("log_tf_debug"),
@@ -108,6 +114,7 @@ def generate_launch_description() -> LaunchDescription:
     return LaunchDescription(
         [
             blob_path_arg,
+            camera_mx_id_arg,
             camera_frame_arg,
             spatial_axis_map_arg,
             log_tf_debug_arg,

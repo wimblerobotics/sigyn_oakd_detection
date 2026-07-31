@@ -21,15 +21,17 @@ This node provides RGB imaging, point cloud generation, and AprilTag detection f
 Install the AprilTag detection library:
 
 ```bash
-pip install dt-apriltags
+pip install pupil-apriltags
 ```
 
 Or in your virtual environment:
 
 ```bash
 source ~/sigyn-venv/bin/activate
-pip install dt-apriltags
+pip install pupil-apriltags
 ```
+
+**Note**: `pupil-apriltags` is more actively maintained and provides better accuracy than the older `dt-apriltags` library.
 
 ### Build
 
@@ -175,5 +177,5 @@ Both nodes can run simultaneously on different cameras.
 ## References
 
 - [AprilTag Paper](https://april.eecs.umich.edu/software/apriltag)
-- [dt-apriltags Library](https://github.com/duckietown/lib-dt-apriltags)
+- [pupil-apriltags Library](https://github.com/pupil-labs/apriltags) (actively maintained)
 - [DepthAI Documentation](https://docs.luxonis.com/)
