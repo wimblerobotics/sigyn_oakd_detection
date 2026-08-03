@@ -104,6 +104,18 @@ def generate_launch_description() -> LaunchDescription:
         description="AprilTag family to detect",
     )
     
+    apriltag_detect_every_arg = DeclareLaunchArgument(
+        "apriltag_detect_every",
+        default_value="10",
+        description="Run AprilTag detection every N frames",
+    )
+    
+    apriltag_quad_decimate_arg = DeclareLaunchArgument(
+        "apriltag_quad_decimate",
+        default_value="3.0",
+        description="Detection speed improvement (higher = faster, less accurate)",
+    )
+    
     tag_size_m_arg = DeclareLaunchArgument(
         "tag_size_m",
         default_value="0.166",
@@ -133,6 +145,8 @@ def generate_launch_description() -> LaunchDescription:
                 "point_cloud_stride": LaunchConfiguration("point_cloud_stride"),
                 "point_cloud_max_depth_m": LaunchConfiguration("point_cloud_max_depth_m"),
                 "apriltag_family": LaunchConfiguration("apriltag_family"),
+                "apriltag_detect_every": LaunchConfiguration("apriltag_detect_every"),
+                "apriltag_quad_decimate": LaunchConfiguration("apriltag_quad_decimate"),
                 "tag_size_m": LaunchConfiguration("tag_size_m"),
             }
         ],
@@ -159,6 +173,8 @@ def generate_launch_description() -> LaunchDescription:
         point_cloud_stride_arg,
         point_cloud_max_depth_m_arg,
         apriltag_family_arg,
+        apriltag_detect_every_arg,
+        apriltag_quad_decimate_arg,
         tag_size_m_arg,
         use_rviz_arg,
         apriltag_node,

@@ -47,6 +47,8 @@ apriltag_decode_sharpening : float (default: 0.25)
     Sharpening for decode.
 apriltag_max_hamming : int (default: 1)
     Maximum Hamming distance for error correction.
+apriltag_detect_every : int (default: 10)
+    Run AprilTag detection every N frames to reduce CPU and stderr flood.
 tag_size_m : float (default: 0.166)
     Physical size of AprilTags in meters (for pose estimation).
 """
@@ -97,6 +99,7 @@ class OakdApriltagNode(Node):
         self.declare_parameter("apriltag_refine_edges", True)
         self.declare_parameter("apriltag_decode_sharpening", 0.25)
         self.declare_parameter("apriltag_max_hamming", 1)
+        self.declare_parameter("apriltag_detect_every", 10)  # Detect every N frames
         self.declare_parameter("tag_size_m", 0.120) # 0.166)
 
         # Get parameters
@@ -114,6 +117,7 @@ class OakdApriltagNode(Node):
         self.apriltag_refine_edges = self.get_parameter("apriltag_refine_edges").value
         self.apriltag_decode_sharpening = self.get_parameter("apriltag_decode_sharpening").value
         self.apriltag_max_hamming = self.get_parameter("apriltag_max_hamming").value
+        self.apriltag_detect_every = self.get_parameter("apriltag_detect_every").value
         self.tag_size_m = self.get_parameter("tag_size_m").value
 
         # Check AprilTag library availability
@@ -147,6 +151,10 @@ class OakdApriltagNode(Node):
 
         # Frame counter for point cloud throttling
         self.frame_count = 0
+        
+        # Frame counter for AprilTag detection throttling
+        self.detection_frame_count = 0
+        self.last_detections = []
 
         # Camera intrinsics (will be filled when pipeline starts)
         self.camera_intrinsics: Optional[np.ndarray] = None
@@ -315,19 +323,25 @@ class OakdApriltagNode(Node):
             cam_info = self._create_camera_info(header, rgb_frame.shape)
             self.camera_info_pub.publish(cam_info)
 
-        # Detect AprilTags
-        gray_frame = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2GRAY)
-        detections = self.at_detector.detect(
-            gray_frame,
-            estimate_tag_pose=True,
-            camera_params=[
-                self.camera_matrix[0, 0],  # fx
-                self.camera_matrix[1, 1],  # fy
-                self.camera_matrix[0, 2],  # cx
-                self.camera_matrix[1, 2],  # cy
-            ],
-            tag_size=self.tag_size_m,
-        )
+        # Detect AprilTags (throttled to reduce CPU and stderr flood)
+        self.detection_frame_count += 1
+        detections = self.last_detections  # Use last detections by default
+        
+        if self.detection_frame_count >= self.apriltag_detect_every:
+            self.detection_frame_count = 0
+            gray_frame = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2GRAY)
+            detections = self.at_detector.detect(
+                gray_frame,
+                estimate_tag_pose=True,
+                camera_params=[
+                    self.camera_matrix[0, 0],  # fx
+                    self.camera_matrix[1, 1],  # fy
+                    self.camera_matrix[0, 2],  # cx
+                    self.camera_matrix[1, 2],  # cy
+                ],
+                tag_size=self.tag_size_m,
+            )
+            self.last_detections = detections
 
         # Publish AprilTag detections
         if detections:
