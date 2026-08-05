@@ -139,12 +139,12 @@ class OakdApriltagNode(Node):
         )
 
         # Create publishers
-        self.rgb_pub = self.create_publisher(Image, "~/rgb_image", 10)
-        self.depth_pub = self.create_publisher(Image, "~/depth_image", 10)
+        self.rgb_pub = self.create_publisher(Image, "~/rgb_image", qos_profile_sensor_data)
+        self.depth_pub = self.create_publisher(Image, "~/depth_image", qos_profile_sensor_data)
         self.points_pub = self.create_publisher(PointCloud2, "~/points", qos_profile_sensor_data)
-        self.camera_info_pub = self.create_publisher(CameraInfo, "~/camera_info", 10)
+        self.camera_info_pub = self.create_publisher(CameraInfo, "~/camera_info", qos_profile_sensor_data)
         self.detections_pub = self.create_publisher(Detection3DArray, "~/detections", 10)
-        self.annotated_pub = self.create_publisher(Image, "~/annotated_image", 10)
+        self.annotated_pub = self.create_publisher(Image, "~/annotated_image", qos_profile_sensor_data)
 
         # CV Bridge
         self.bridge = CvBridge()
